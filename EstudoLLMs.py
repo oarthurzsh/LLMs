@@ -84,7 +84,7 @@ while True:
 
     if option == "1":
 
-        url = input("\nWrite the URL from which you want to extract information: ")
+        url = input("\nEnter the URL: ")
         domain = urlparse(url).netloc
 
         if blocked_websites.get(domain):
