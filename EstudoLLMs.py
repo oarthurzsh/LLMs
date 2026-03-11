@@ -12,6 +12,27 @@ from urllib.parse import urlparse
 MODEL_ID = "Qwen/Qwen2.5-1.5B-Instruct"
 CHUNK_SIZE = 128
 MIN_TEXT_LENGTH = 50
+USER_AGENT = "Mozilla/5.0"
+
+
+# ==============================
+# MODEL
+# ==============================
+
+def load_model():
+    print("Loading model, please wait...")
+
+    pipe = pipeline(
+        "text-generation",
+        model=MODEL_ID,
+        device_map="auto",
+        temperature=0.1,
+        max_length=None,
+        max_new_tokens=5
+    )
+
+    print("Model loaded successfully!")
+    return pipe
 
 
 # ==============================
@@ -23,101 +44,47 @@ def extract_text_from_html(html):
         tag.extract()
 
     paragraphs = [p.get_text().strip() for p in html.find_all("p")]
-    text = " ".join(paragraphs)
-
-    return text
+    return " ".join(paragraphs)
 
 
 def chunk_text(text, chunk_size=CHUNK_SIZE):
     words = text.split()
-    chunks = []
-
-    for i in range(0, len(words), chunk_size):
-        chunk = " ".join(words[i:i + chunk_size])
-        chunks.append(chunk)
-
-    return chunks
+    return [
+        " ".join(words[i:i + chunk_size])
+        for i in range(0, len(words), chunk_size)
+    ]
 
 
 # ==============================
-# MODEL LOADING
+# WEB UTILITIES
 # ==============================
 
-print("Loading model, please wait...")
-
-pipe = pipeline(
-    "text-generation",
-    model=MODEL_ID,
-    device_map="auto",
-    temperature=0.1,
-    max_length=None,
-    max_new_tokens=5
-)
-
-print("Model loaded successfully!")
+def normalize_url(url):
+    if not url.startswith("http"):
+        url = "http://" + url
+    return url
 
 
-# ==============================
-# BLOCKED WEBSITES
-# ==============================
+def fetch_page(url):
+    headers = {"User-Agent": USER_AGENT}
+    response = requests.get(url, headers=headers, timeout=10)
 
-print("Loading blocked websites list...")
+    if response.status_code != 200:
+        return None
 
-blocked_websites = {}
+    return response.text
 
-print("Blocked websites list loaded successfully!")
+
+def get_domain(url):
+    return urlparse(url).netloc
 
 
 # ==============================
-# MAIN LOOP
+# AI ANALYSIS
 # ==============================
 
-while True:
-
-    os.system('cls' if os.name == 'nt' else 'clear')
-
-    print("1. Web Analysis")
-    print("2. Video Analysis (Coming Soon)")
-    print("0. Exit")
-
-    option = input("\nSelect an option: ")
-
-    if option == "1":
-
-        url = input("\nEnter the URL: ")
-        domain = urlparse(url).netloc
-
-        if blocked_websites.get(domain):
-            print("This website is blocked. Please try another one.")
-            input("\nPress Enter to continue...")
-            continue
-
-        try:
-
-            headers = {"User-Agent": "Mozilla/5.0"}
-
-            response = requests.get(url, headers=headers, timeout=10)
-
-            if response.status_code != 200:
-                print("Failed to access the website.")
-                input("\nPress Enter to continue...")
-                continue
-
-            html = BeautifulSoup(response.text, "html.parser")
-
-            print("Extracting page content...")
-
-            text = extract_text_from_html(html)
-
-            if len(text) < MIN_TEXT_LENGTH:
-                print("Could not extract useful text from the page.")
-                input("\nPress Enter to continue...")
-                continue
-
-            chunks = chunk_text(text)
-            context = "\n".join(chunks[:5])
-
-            prompt = f"""
+def build_prompt(context):
+    return f"""
 You analyze webpage content.
 
 Context:
@@ -129,40 +96,129 @@ Is this webpage related to robotics?
 Answer ONLY True or False.
 """
 
-            print("Analyzing content...")
 
-            result = pipe(prompt, return_full_text=False)
-            generated = result[0]["generated_text"].strip().lower()
+def analyze_content(pipe, context):
+    prompt = build_prompt(context)
 
-            print("\nAnalysis Result:\n")
+    result = pipe(prompt, return_full_text=False)
+    generated = result[0]["generated_text"].strip().lower()
 
-            if "false" in generated:
-                print("The webpage is not related to robotics.")
-                print("Blocking this website for future analysis.")
-                blocked_websites[domain] = domain
+    return generated
 
-            elif "true" in generated:
-                print("The webpage is related to robotics.")
 
-            else:
-                print("Could not determine the result:", generated)
+# ==============================
+# PAGE ANALYSIS PIPELINE
+# ==============================
 
-        except Exception as e:
-            print("Error:", e)
+def process_webpage(pipe, url, blocked_websites):
 
-        input("\nPress Enter to continue...")
+    url = normalize_url(url)
+    domain = get_domain(url)
 
-    elif option == "2":
+    if blocked_websites.get(domain):
+        print("This website is blocked. Please try another one.")
+        return
 
-        print("Video Analysis is coming soon!")
-        input("\nPress Enter to continue...")
+    page = fetch_page(url)
 
-    elif option == "0":
+    if not page:
+        print("Failed to access the website.")
+        return
 
-        print("Exiting...")
-        break
+    html = BeautifulSoup(page, "html.parser")
+
+    print("Extracting page content...")
+
+    text = extract_text_from_html(html)
+
+    if len(text) < MIN_TEXT_LENGTH:
+        print("Could not extract useful text from the page.")
+        return
+
+    chunks = chunk_text(text)
+    context = "\n".join(chunks[:5])
+
+    print("Analyzing content...")
+
+    generated = analyze_content(pipe, context)
+
+    print("\nAnalysis Result:\n")
+
+    if "false" in generated:
+        print("The webpage is not related to robotics.")
+        print("Blocking this website for future analysis.")
+        blocked_websites[domain] = domain
+
+    elif "true" in generated:
+        print("The webpage is related to robotics.")
 
     else:
+        print("Could not determine the result:", generated)
 
-        print("Invalid option. Please try again.")
-        input("\nPress Enter to continue...")
+
+# ==============================
+# UI
+# ==============================
+
+def clear_screen():
+    os.system('cls' if os.name == 'nt' else 'clear')
+
+
+def show_menu():
+    print("1. Web Analysis")
+    print("2. Video Analysis (Coming Soon)")
+    print("0. Exit")
+
+
+def wait():
+    input("\nPress Enter to continue...")
+
+
+# ==============================
+# MAIN
+# ==============================
+
+def main():
+
+    pipe = load_model()
+
+    print("Loading blocked websites list...")
+    blocked_websites = {}
+    print("Blocked websites list loaded successfully!")
+
+    while True:
+
+        clear_screen()
+        show_menu()
+
+        option = input("\nSelect an option: ")
+
+        if option == "1":
+
+            url = input("\nEnter the URL: ")
+
+            try:
+                process_webpage(pipe, url, blocked_websites)
+            except Exception as e:
+                print("Error:", e)
+
+            wait()
+
+        elif option == "2":
+
+            print("Video Analysis is coming soon!")
+            wait()
+
+        elif option == "0":
+
+            print("Exiting...")
+            break
+
+        else:
+
+            print("Invalid option. Please try again.")
+            wait()
+
+
+if __name__ == "__main__":
+    main()
